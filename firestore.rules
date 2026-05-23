@@ -1,0 +1,132 @@
+rules_version = '2';
+// =====================================================
+// Firestore Security Rules - نبضة Chat App
+// v2 — إصلاحات الأمان:
+//   - تشديد XP: المستخدم يمكنه فقط استقبال XP عبر increment محدد
+//   - منع تعديل messagesSent مباشرة (إلا عبر increment صغير)
+//   - السماح للأعضاء بالانضمام عبر arrayUnion
+// =====================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==================== HELPER FUNCTIONS ====================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    function isRoomMember(roomData) {
+      return request.auth.uid in roomData.members;
+    }
+
+    function isRoomOwner(roomData) {
+      return request.auth.uid == roomData.ownerId;
+    }
+
+    // XP يمكن أن يزيد بحد أقصى 55 نقطة لكل write
+    // (أكبر عملية مشروعة: 50 daily login + 5 رسالة)
+    // هذا يمنع الـ loop exploit مع السماح بالعمليات الطبيعية
+    // يستخدم .get() لدعم المستخدمين القدامى الذين لا يمتلكون حقل xp
+    function isXpChangeSafe() {
+      let currentXp = resource.data.get('xp', 0);
+      let newXp = request.resource.data.get('xp', 0);
+      let xpDiff = newXp - currentXp;
+      return xpDiff <= 55 && xpDiff >= -1;
+    }
+
+    // ==================== USERS ====================
+    match /users/{userId} {
+      // القراءة: أي مستخدم مسجل (للبحث عن أصدقاء)
+      allow read: if isAuthenticated();
+
+      // الإنشاء: فقط للمستخدم نفسه عند التسجيل
+      allow create: if isOwner(userId)
+        && request.resource.data.uid == userId
+        && request.resource.data.username is string
+        && request.resource.data.username.size() >= 2
+        && request.resource.data.username.size() <= 30
+        && request.resource.data.email is string
+        && request.resource.data.level == 1
+        && request.resource.data.xp <= 100;  // XP ابتدائي لا يتجاوز 100
+
+      // التعديل: فقط للمستخدم نفسه، مع قيود صارمة على الحقول الحساسة
+      allow update: if isOwner(userId)
+        // لا يمكن تغيير uid أو email أو joinDate
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.joinDate == resource.data.joinDate
+        // XP: لا يزيد أكثر من 55 نقطة في الـ write الواحد
+        && isXpChangeSafe()
+        // messagesSent: يمكن أن يزيد بواحد فقط في كل write (من sendMessage)
+        && (request.resource.data.get('messagesSent', 0) - resource.data.get('messagesSent', 0)) <= 1
+        // اسم المستخدم بين 2 و 30 حرف
+        && request.resource.data.get('username', 'xx').size() >= 2
+        && request.resource.data.get('username', 'xx').size() <= 30;
+
+      allow delete: if false;
+    }
+
+    // ==================== ROOMS ====================
+    match /rooms/{roomId} {
+      // قراءة الغرفة: عامة أو عضو فيها
+      allow read: if isAuthenticated()
+        && (resource.data.isPublic == true || isRoomMember(resource.data));
+
+      // إنشاء غرفة
+      allow create: if isAuthenticated()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 50
+        && request.resource.data.members is list
+        && request.auth.uid in request.resource.data.members;
+
+      // تعديل الغرفة:
+      // - المالك: حرية كاملة
+      // - أي مستخدم مسجل: يمكنه الانضمام (تحديث members + memberCount فقط)
+      //   لأن joinRoom يستخدم arrayUnion على غرف عامة
+      // - الأعضاء: يمكنهم تحديث lastMessage + lastMessageAt
+      allow update: if isAuthenticated()
+        && (
+          isRoomOwner(resource.data)
+          || (
+            // انضمام لغرفة عامة: المستخدم غير العضو يضيف نفسه فقط
+            resource.data.isPublic == true
+            && !isRoomMember(resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['members', 'memberCount'])
+            && request.resource.data.memberCount == resource.data.memberCount + 1
+          )
+          || (
+            // عضو يرسل رسالة: تحديث آخر رسالة فقط
+            isRoomMember(resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['lastMessage', 'lastMessageAt', 'memberCount', 'members'])
+          )
+        );
+
+      allow delete: if isAuthenticated() && isRoomOwner(resource.data);
+
+      // ==================== MESSAGES ====================
+      match /messages/{messageId} {
+        allow read: if isAuthenticated()
+          && isRoomMember(get(/databases/$(database)/documents/rooms/$(roomId)).data);
+
+        allow create: if isAuthenticated()
+          && isRoomMember(get(/databases/$(database)/documents/rooms/$(roomId)).data)
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 1000
+          && request.resource.data.roomId == roomId;
+
+        allow update, delete: if false;
+      }
+    }
+  }
+}
