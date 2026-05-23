@@ -27,50 +27,48 @@ import type { UserProfile } from "@/lib/types"
 
 export function useAuth() {
   const [user, setUser] = useState<FirebaseUser | null>(null)
-  const [profile, setProfile] = useState<UserProfile | null | undefined>(undefined) 
-  const [loading, setLoading] = useState(true)
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  // authLoading: هل Firebase Auth لا يزال يتحقق من الجلسة؟
+  const [authLoading, setAuthLoading] = useState(true)
+  // profileLoading: هل المستخدم مسجّل لكن profile لم تُحمَّل بعد؟
+  const [profileLoading, setProfileLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
   const profileUnsubRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     const authUnsub = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser)
 
+      // أوقف المستمع السابق
       if (profileUnsubRef.current) {
         profileUnsubRef.current()
         profileUnsubRef.current = null
       }
 
       if (firebaseUser) {
+        // مستخدم مسجّل — ابدأ تحميل الـ profile
+        setProfileLoading(true)
         const profileRef = doc(db, "users", firebaseUser.uid)
-
-        const profileUnsub = onSnapshot(
-          profileRef,
-          (snap) => {
-            if (snap.exists()) {
-              setProfile(snap.data() as UserProfile)
-            } else {
-              // 🔥 مهم: لا تعتبر عدم وجوده = logout
-              setProfile(null)
-            }
-
-            setLoading(false)
-          },
-          (err) => {
-            console.error("Profile listener error:", err)
-
-            // 🔥 لا تطرد المستخدم بسبب خطأ مؤقت
-            setProfile(undefined)
-            setLoading(false)
+        const profileUnsub = onSnapshot(profileRef, (snap) => {
+          if (snap.exists()) {
+            setProfile(snap.data() as UserProfile)
+          } else {
+            setProfile(null)
           }
-        )
-
+          // سواء وُجد profile أو لا، انتهى التحميل
+          setProfileLoading(false)
+          setAuthLoading(false)
+        }, (err) => {
+          console.error("Profile listener error:", err)
+          setProfileLoading(false)
+          setAuthLoading(false)
+        })
         profileUnsubRef.current = profileUnsub
       } else {
-        setUser(null)
+        // لا يوجد مستخدم
         setProfile(null)
-        setLoading(false)
+        setProfileLoading(false)
+        setAuthLoading(false)
       }
     })
 
@@ -80,6 +78,12 @@ export function useAuth() {
     }
   }, [])
 
+  // loading الكلي: إما Auth لم ينته، أو profile لم تُحمَّل بعد
+  const loading = authLoading || profileLoading
+
+  /**
+   * التحقق من أن اسم المستخدم غير مكرر
+   */
   const isUsernameTaken = async (username: string): Promise<boolean> => {
     const q = query(
       collection(db, "users"),
@@ -96,17 +100,17 @@ export function useAuth() {
     password: string,
     avatar: string,
     color: string
-  ) => {
+  ): Promise<{ success: boolean; error?: string }> => {
     setError(null)
     try {
+      // 1. تحقق من الاسم قبل إنشاء الحساب
       const taken = await isUsernameTaken(username.trim())
       if (taken) {
         return { success: false, error: "اسم المستخدم مستخدم مسبقاً، اختر اسماً آخر" }
       }
 
-      const { user: firebaseUser } =
-        await createUserWithEmailAndPassword(auth, email, password)
-
+      // 2. أنشئ حساب Firebase Auth
+      const { user: firebaseUser } = await createUserWithEmailAndPassword(auth, email, password)
       await updateProfile(firebaseUser, { displayName: username.trim() })
 
       const userProfile: UserProfile = {
@@ -126,6 +130,7 @@ export function useAuth() {
         createdAt: serverTimestamp() as any,
       }
 
+      // 3. احفظ الـ profile في Firestore — الـ onSnapshot سيلتقطها تلقائياً
       await setDoc(doc(db, "users", firebaseUser.uid), userProfile)
 
       return { success: true }
@@ -136,19 +141,20 @@ export function useAuth() {
     }
   }
 
-  const login = async (email: string, password: string) => {
+  const login = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
     setError(null)
     try {
-      const { user: firebaseUser } =
-        await signInWithEmailAndPassword(auth, email, password)
+      const { user: firebaseUser } = await signInWithEmailAndPassword(auth, email, password)
 
+      // تحديث XP اليومي — عملية خفيفة في الخلفية
       const profileRef = doc(db, "users", firebaseUser.uid)
       const snap = await getDoc(profileRef)
-
       if (snap.exists()) {
         const data = snap.data() as UserProfile
         const today = new Date().toDateString()
-
         if (data.dailyLogin !== today) {
           await updateDoc(profileRef, {
             dailyLogin: today,
@@ -175,35 +181,18 @@ export function useAuth() {
     await updateDoc(ref, updates)
   }
 
-  return {
-    user,
-    profile,
-    loading,
-    error,
-    register,
-    login,
-    logout,
-    updateUserProfile,
-  }
+  return { user, profile, loading, error, register, login, logout, updateUserProfile }
 }
 
 function getAuthError(code: string): string {
   switch (code) {
-    case "auth/email-already-in-use":
-      return "البريد الإلكتروني مستخدم مسبقاً"
-    case "auth/invalid-email":
-      return "البريد الإلكتروني غير صالح"
-    case "auth/weak-password":
-      return "كلمة المرور ضعيفة (6 أحرف على الأقل)"
-    case "auth/user-not-found":
-      return "لا يوجد حساب بهذا البريد"
-    case "auth/wrong-password":
-      return "كلمة المرور غير صحيحة"
-    case "auth/invalid-credential":
-      return "البريد أو كلمة المرور غير صحيحة"
-    case "auth/too-many-requests":
-      return "محاولات كثيرة، حاول لاحقاً"
-    default:
-      return "حدث خطأ، حاول مجدداً"
+    case "auth/email-already-in-use": return "البريد الإلكتروني مستخدم مسبقاً"
+    case "auth/invalid-email": return "البريد الإلكتروني غير صالح"
+    case "auth/weak-password": return "كلمة المرور ضعيفة (6 أحرف على الأقل)"
+    case "auth/user-not-found": return "لا يوجد حساب بهذا البريد"
+    case "auth/wrong-password": return "كلمة المرور غير صحيحة"
+    case "auth/invalid-credential": return "البريد أو كلمة المرور غير صحيحة"
+    case "auth/too-many-requests": return "محاولات كثيرة، حاول لاحقاً"
+    default: return "حدث خطأ، حاول مجدداً"
   }
 }
