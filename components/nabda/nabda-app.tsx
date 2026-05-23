@@ -14,19 +14,20 @@ type Tab = "home" | "friends" | "profile"
 
 export function NabdaApp() {
   const [activeTab, setActiveTab] = useState<Tab>("home")
-  // roomCount is lifted from HomeTab to avoid a duplicate useRooms listener
   const [roomCount, setRoomCount] = useState(0)
 
   const { user, profile, loading, register, login, logout, updateUserProfile } = useAuth()
 
-  // Presence system — tracks online/offline in Realtime Database
+  // Presence system
   usePresence(user?.uid ?? null, profile?.username)
 
+  // 🔥 1. أول شيء: التحميل العام
   if (loading) {
     return <SplashScreen />
   }
 
-  if (!user || !profile) {
+  // 🔥 2. إذا ما فيه مستخدم نهائيًا
+  if (!user) {
     return (
       <AuthScreen
         onLogin={login}
@@ -35,9 +36,19 @@ export function NabdaApp() {
     )
   }
 
+  // 🔥 3. المستخدم موجود لكن البروفايل لسه ما وصل (مهم جدًا)
+  if (user && profile === null) {
+    return <SplashScreen />
+  }
+
+  // 🔥 4. حماية إضافية (Type safety)
+  if (!profile) {
+    return <SplashScreen />
+  }
+
   return (
     <div className="min-h-screen bg-background pb-16">
-      {/* HomeTab is always mounted to keep the rooms listener alive */}
+      {/* HomeTab is always mounted */}
       <div className={activeTab === "home" ? "block" : "hidden"}>
         <HomeTab
           currentUser={profile}
@@ -51,6 +62,7 @@ export function NabdaApp() {
           updateProfile={updateUserProfile}
         />
       )}
+
       {activeTab === "profile" && (
         <ProfileTab
           currentUser={profile}
@@ -59,6 +71,7 @@ export function NabdaApp() {
           roomCount={roomCount}
         />
       )}
+
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
     </div>
   )
