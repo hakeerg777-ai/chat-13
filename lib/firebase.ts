@@ -23,3 +23,5 @@ export const db = getFirestore(app)
 export const rtdb = getDatabase(app)  // Realtime Database للـ Presence system
 
 export default app
+console.log("API KEY:", process.env.NEXT_PUBLIC_FIREBASE_API_KEY)
+console.log("AUTH DOMAIN:", process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN)
