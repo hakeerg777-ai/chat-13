@@ -18,15 +18,14 @@ export function NabdaApp() {
 
   const { user, profile, loading, register, login, logout, updateUserProfile } = useAuth()
 
-  // Presence system
   usePresence(user?.uid ?? null, profile?.username)
 
-  // 🔥 1. أول شيء: التحميل العام
+  // ① لا يزال Firebase يتحقق من الجلسة — أو profile قيد التحميل
   if (loading) {
     return <SplashScreen />
   }
 
-  // 🔥 2. إذا ما فيه مستخدم نهائيًا
+  // ② لا يوجد مستخدم مسجّل إطلاقاً — اعرض شاشة الدخول
   if (!user) {
     return (
       <AuthScreen
@@ -36,19 +35,16 @@ export function NabdaApp() {
     )
   }
 
-  // 🔥 3. المستخدم موجود لكن البروفايل لسه ما وصل (مهم جدًا)
-  if (user && profile === null) {
-    return <SplashScreen />
-  }
-
-  // 🔥 4. حماية إضافية (Type safety)
+  // ③ المستخدم مسجّل لكن profile لا تزال null (نادر — مثلاً أُنشئ الحساب من مكان آخر)
+  // نُبقي على SplashScreen بدلاً من إعادته لشاشة التسجيل
   if (!profile) {
     return <SplashScreen />
   }
 
+  // ④ مستخدم مسجّل + profile محمّلة ✅
   return (
     <div className="min-h-screen bg-background pb-16">
-      {/* HomeTab is always mounted */}
+      {/* HomeTab mounted دائماً للحفاظ على مستمع الغرف */}
       <div className={activeTab === "home" ? "block" : "hidden"}>
         <HomeTab
           currentUser={profile}
@@ -62,7 +58,6 @@ export function NabdaApp() {
           updateProfile={updateUserProfile}
         />
       )}
-
       {activeTab === "profile" && (
         <ProfileTab
           currentUser={profile}
@@ -71,7 +66,6 @@ export function NabdaApp() {
           roomCount={roomCount}
         />
       )}
-
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
     </div>
   )
